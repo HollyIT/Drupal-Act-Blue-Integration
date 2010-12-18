@@ -1,0 +1,498 @@
+<?php
+
+/**
+ * Implementation of hook_node_info()
+ */
+
+function actblue_theme() {
+
+  return array(
+    'actblue_entity_order'=>array(
+      'arguments'=>array('form'=>NULL)
+    ),
+
+    'actblue_entity_image' => array(
+      'arguments' => array('entity' => NULL, 'teaser'=>NULL, 'page'=>NULL),
+      'file'=>'actblue.theme.inc'
+    ),
+    'actblue_form_open' => array(
+      'arguments' => array('node' => NULL, 'teaser'=>NULL, 'page'=>NULL),
+      'file'=>'actblue.theme.inc'
+    ),
+    'actblue_form_close' => array(
+      'arguments' => array('node' => NULL, 'teaser'=>NULL, 'page'=>NULL),
+      'file'=>'actblue.theme.inc'
+    ),
+    'actblue_form_item' => array(
+      'arguments' => array('node' => NULL, 'teaser'=>NULL, 'page'=>NULL),
+      'file'=>'actblue.theme.inc'
+    ),
+    'actblue_totals' => array(
+      'arguments' => array('node' => NULL, 'teaser'=>NULL, 'page'=>NULL),
+      'file'=>'actblue.theme.inc'
+    ),
+  );
+}
+
+function actblue_perm() {
+
+  return array('manage actblue');
+}
+
+function actblue_access($op, $node, $account) {
+  static $pids;
+  switch ($op) {
+    case 'create':
+    case 'update':
+    case 'delete':
+      return user_access('manage actblue', $account) && $account->uid ? TRUE : NULL;
+
+    case 'view':
+      if ($node->type=='actblue_page') {
+        if (user_access('manage actblue', $account)) {
+          return true;
+        }
+        if ($node->status==1) {
+          return user_access('access content', $account);
+        }
+      }
+      if ($node->type=='actblue_entity') {
+
+        if (user_access('manage actblue', $account)) {
+          return true;
+        }
+        if (!$pids[$node->actblue['pid']]) {
+          $pids[$node->actblue['pid']] = node_load(db_result(db_query("SELECT nid FROM {actblue_pages} WHERE pid='%s'", $node->actblue['pid'])));
+        }
+        if ($pids[$node->actblue['pid']]->status==1) {
+          return user_access('access content', $account);
+        }
+      }
+
+  }
+}
+
+function actblue_node_info() {
+  return array(
+    'actblue_page' => array(
+      'name' => t('Act Blue Page'),
+      'module' => 'actblue',
+      'description' => t("Provides a ActBlue fundraising page"),
+      'has_title' => true,
+      'has_body' => true,
+      'body_label' => 'Blurb',
+      'title_label' => 'Fundraiser name'
+    ),
+    'actblue_entity' => array(
+      'name' => t('Act Blue Entity'),
+      'module' => 'actblue',
+      'description' => t("Provides a ActBlue entity (candidate) which are displayed on ActBlue fundraising pages"),
+      'has_title' => true,
+      'has_body' => true,
+      'body_label' => 'Blurb',
+      'title_label' => 'Entity Name'
+    ),
+  );
+}
+
+function actblue_menu_alter(&$menu) {
+  $menu['node/add/actblue-page']['page callback']='drupal_get_form';
+  $menu['node/add/actblue-page']['page arguments']=array('actblue_add_page');
+  $menu['node/add/actblue-page']['module']='actblue';
+  $menu['node/add/actblue-page']['file']='actblue.admin.php';
+}
+
+function actblue_insert($node) {
+  switch ($node->type) {
+    case 'actblue_page':
+      $node->actblue['nid']=$node->nid;
+      drupal_write_record('actblue_pages',$node->actblue);
+      break;
+
+    case 'actblue_entity':
+      $data=$node->actblue;
+      $data['nid']=$node->nid;
+
+      drupal_write_record('actblue_entities',$data);
+      break;
+  }
+
+}
+
+function actblue_update($node) {
+  switch ($node->type) {
+    case 'actblue_page':
+      $save = $node->actblue;
+      $save['nid']=$node->nid;
+
+      drupal_write_record('actblue_pages',$save, 'nid');
+      if (is_array($node->entities)) {
+        foreach ($node->entities['entity'] as $eid=>$data) {
+          db_query("UPDATE {actblue_entities} SET weight=%d WHERE eid=%d AND pid='%s'", $data['weight'], $eid, $node->actblue['pid']);
+        }
+      }
+
+      if ($node->entities['actblue_weight_reset']) {
+
+        db_query("UPDATE {actblue_entities} SET weight=position WHERE pid='%s'",  $node->actblue['pid']);
+      }
+
+      break;
+
+    case 'actblue_entity':
+      $save = $node->actblue;
+      $save['nid']=$node->nid;
+
+      drupal_write_record('actblue_entities',$save, 'nid');
+      break;
+  }
+}
+
+function actblue_delete($node) {
+  switch ($node->type) {
+    case 'actblue_page':
+      db_query("DELETE FROM {actblue_pages} WHERE nid=%d",$node->nid);
+      // Delete out all entities
+      $result = db_query("SELECT nid FROM {actblue_entities} WHERE pid='%s'", $node->actblue['pid']);
+      if ($node->actblue['tid'] && module_exists('taxonomy')){
+        taxonomy_del_term($node->actblue['tid']);
+      }
+      while ($row=db_fetch_object($result)) {
+        node_delete($row->nid);
+      }
+      break;
+
+    case 'actblue_entity':
+      if ($node->actblue['tid'] && module_exists('taxonomy')){
+        taxonomy_del_term($node->actblue['tid']);
+      }
+      db_query("DELETE FROM {actblue_entities} WHERE nid=%d", $node->nid);
+      break;
+  }
+
+}
+
+function actblue_load(&$node) {
+  switch ($node->type) {
+    case 'actblue_page':
+      $node->actblue = db_fetch_array(db_query("SELECT * FROM {actblue_pages} WHERE nid=%d",$node->nid));
+      break;
+
+    case 'actblue_entity':
+      $node->actblue = db_fetch_array(db_query("SELECT * FROM {actblue_entities} WHERE nid=%d",$node->nid));
+      _actblue_add_node_page($node);
+      break;
+  }
+}
+
+function  _actblue_add_node_page(&$node) {
+  static $cache;
+  if (!$cache[$node->actblue['pid']]) {
+    $nid = db_result(db_query("SELECT nid FROM {actblue_pages} WHERE pid='%s'",$node->actblue['pid']));
+    if ($nid) {
+      $cache[$node->actblue['pid']]=node_load($nid);
+    }
+
+  }
+  $node->actblue['page']=$cache[$node->actblue['pid']];
+}
+
+function actblue_view($node, $teaser, $page) {
+  switch ($node->type) {
+    case 'actblue_page':
+      $node = node_prepare($node, $teaser);
+      if (!$teaser && $page) {
+        $result=db_query("SELECT nid FROM {actblue_entities} WHERE pid='%s' ORDER BY weight ASC", $node->actblue['pid']);
+        while ($row=db_fetch_object($result)) {
+
+          $entities.=node_view(node_load($row->nid), true,false);
+        }
+      }
+      $node->content['actblue_totals']=array(
+        '#value'=>theme('actblue_totals', $node, $teaser, $page),
+        '#weight' => 10
+      );
+      $node->content['form_opener']=array(
+        '#value'=>theme('actblue_form_open', $node, $teaser, $page),
+        '#weight' => 20
+      );
+      $node->content['entities']=array(
+        '#value'=>'<div class="actblue-entities-list">'.$entities.'</div>',
+        '#weight' => 30
+      );
+      $node->content['form_closer']=array(
+        '#value'=>theme('actblue_form_close', $node, $teaser, $page),
+        '#weight' => 40
+      );
+      return $node;
+      break;
+
+    case 'actblue_entity':
+      $node = node_prepare($node, $teaser);
+      $node->content['entity_image']=array(
+        '#value'=>theme('actblue_entity_image', $node, $teaser, $page),
+        '#weight' => -10
+      );
+      $node->content['actblue_totals']=array(
+        '#value'=>theme('actblue_totals', $node, $teaser, $page),
+        '#weight' => 30
+      );
+      $node->content['form_item']=array(
+        '#value'=>theme('actblue_form_item', $node, $teaser, $page),
+        '#weight' => 40
+      );
+
+      if (!$teaser && $page) {
+        $node->content['form_opener']=array(
+          '#value'=>theme('actblue_form_open', $node, $teaser, $page),
+          '#weight' => 20
+        );
+
+        $node->content['form_closer']=array(
+          '#value'=>theme('actblue_form_close', $node, $teaser, $page),
+          '#weight' => 50
+        );
+      }
+      return $node;
+      break;
+  }
+}
+/**
+ * Implementation of hook_link()
+ */
+
+
+function actblue_link($type, $object, $teaser = FALSE) {
+  if ($type=='node' && $object->type=='actblue_entity' && $object->actblue['website']){
+    $link['website']=array(
+      'title'=>'website',
+      'href' => $object->actblue['website'],
+    );
+    return $link;
+  }
+}
+
+
+function actblue_form($node, $form) {
+
+  if ($node->type=='actblue_page' || $node->type=='actblue_entity') {
+    $type = node_get_types('type', $node);
+
+    $form['title'] = array('#type' => 'textfield', '#title' => check_plain($type->title_label), '#required' => TRUE, '#default_value' => !empty($node->title) ? $node->title : NULL, '#weight' => -5);
+    $form['body_field'] = node_body_field($node, $type->body_label, $type->min_word_count);
+    if ($node->type=='actblue_page') {
+
+      $delta = db_result(db_query("SELECT count(*) FROM {actblue_entities} WHERE pid='%s'",$node->actblue['pid'] ));
+      $result=db_query("SELECT * FROM {actblue_entities} WHERE pid='%s' ORDER BY weight", $node->actblue['pid']);
+      $form['entities']=array(
+        '#type'=>'fieldset',
+        '#title'=>'Entities',
+        '#tree' => true,
+        '#theme'=>'actblue_entity_order'
+      );
+      $form['entities']['actblue_weight_reset']=array(
+        '#type'=>'checkbox',
+        '#title'=>'Check this box to reset the order of entities'
+      );
+      while ($row=db_fetch_object($result)) {
+        $form['entities']['entity'][$row->eid]['name']=array('#value'=>$row->display_name);
+        $form['entities']['entity'][$row->eid]['weight']=array('#default_value'=>$row->weight,'#delta'=>$delta, '#type'=>'weight','#attributes' => array('class'=>'weight'));
+
+      }
+
+    }
+    _actblue_options_form($form,$node);
+    if ($node->type=='actblue_page') {
+      $form['actblue']['is_active']=array(
+        '#type'=>'radios',
+        '#title' => 'Is Active',
+        '#options' => array(0=>'No',1=>'Yes'),
+        '#description' => 'If a page is set to active then information will automatically be updated from ActBlue',
+        '#default_value'=>$node->actblue['is_active'],
+
+      );
+
+      $form['actblue']['cycle']=array(
+        '#title'=>'Cycle',
+        '#type' => 'textfield',
+        '#default_value' => $node->actblue['cycle'],
+        '#description' => 'This is the year of the elections covered in this campaign. If you change it then you will have to reimport your entities.'
+      );
+    }
+
+
+    return $form;
+  }
+}
+
+function _actblue_options_form(&$form, $node) {
+  $form['actblue']=array(
+    '#type' => 'fieldset',
+    '#title' => 'ActBlue Options',
+    '#collapsible' => true,
+    '#collapsed' => true,
+    '#tree'=>true
+  );
+  $form['actblue']['custom_title']=array(
+    '#title'=>'Use Custom Title',
+    '#type' => 'checkbox',
+    '#default_value'=>$node->actblue['custom_title'],
+    '#description' => 'By checking this box you can provide your own title. Default option is to sync the node title with the title from BlueAmerica',
+
+  );
+  $form['actblue']['custom_blurb']=array(
+    '#title'=>'Use Custom Blurb',
+    '#type' => 'checkbox',
+    '#default_value'=>$node->actblue['custom_blurb'],
+    '#description' => 'By checking this box you can provide your own blurb. Default option is to sync the node blurb/body with the blurb from BlueAmerica',
+
+  );
+
+  $form['actblue']['pid']=array('#type'=>'hidden', '#value'=>$node->actblue['pid']);
+  $form['actblue']['eid']=array('#type'=>'hidden', '#value'=>$node->actblue['eid']);
+}
+function actblue_static($name,$value=null) {
+  static $cache;
+  if (isset($value)) {
+    $cache[$name]=$value;
+  }
+  return $cache[$name];
+}
+
+function _actblue_killcontent() {
+  $result=db_query("SELECT nid FROM {node}");
+  while ($row=db_fetch_object($result)) {
+    node_delete($row->nid);
+  }
+}
+
+
+
+function actblue_menu() {
+  $items['admin/settings/actblue']= array(
+    'title'=>'ActBlue',
+    'description' => 'Configure the ActBlue module to communicate with ActBlue',
+    'page callback'=>'drupal_get_form',
+    'page arguments' => array('actblue_settings'),
+    'access arguments' => array('administer site configuration'),
+    'file' => 'actblue.admin.php'
+  );
+
+  return $items;
+}
+
+function actblue_class() {
+  static $class;
+  if (!$class) {
+    include_once('actblue.class.php');
+    $class = new ActBlue();
+  }
+  return $class;
+}
+
+function theme_actblue_entity_order($form) {
+  $headers=array('Candidate','Weight');
+
+  foreach($form['entity'] as $id => $data) {
+    $row=array();
+    if ($data['name']) {
+      $row[] = drupal_render($form['entity'][$id]['name']);
+
+      $row[] = drupal_render($form['entity'][$id]['weight']);
+
+      $rows[] = array('data'=>$row, 'class'=>'draggable');
+    }
+
+  }
+  if (!$rows) {
+    $rows[]=array('data'=>array('No pages imported yet'),'colspan'=>2);
+  }
+  $output = theme('table', $headers, $rows,array('id'=>'pages-table', 'style'=>'width:100%'));
+  $output .= drupal_render($form);
+  drupal_add_tabledrag('pages-table', 'order', 'sibling', 'weight');
+  return $output;
+}
+
+function actblue_token_list($type = 'all') {
+  $tokens = array();
+
+  if ($type == 'node' || $type == 'all') {
+    $tokens['node']['actblue-pid'] = t('The page ID of an ActBlue page/.');
+    $tokens['node']['actblue-eid'] = t('The entity ID supplied from ActBlue');
+    $tokens['node']['actblue-pidalias'] = t('The alias for an entitys campaign');
+  }
+
+  return $tokens;
+}
+
+function actblue_token_values($type, $object = NULL) {
+  if (module_exists('pathauto')) {
+    if ($type == 'node') {
+
+      _pathauto_include();
+   
+      if ($object->type=='actblue_page') {
+        $values['actblue-pid'] = $object->actblue['pid'];
+        return $values;
+
+
+      } elseif ($object->type=='actblue_entity') {
+
+        // Get the bookpathalias token
+        $values['actblue-pid']=$object->actblue_pid;
+        if ($object->actblue['pid'] ) {
+          $pid=$object->actblue['pid'];
+          $values['actblue-pid']=$pid;
+          $nid=db_result(db_query("SELECT nid FROM {actblue_pages} WHERE pid='%s'", $pid));
+          $values['actblue-pidalias'] = url('node/'.$nid);
+        }
+
+        return $values;
+      }
+    }
+  }
+}
+
+function actblue_cron() {
+  $campI = variable_get('actblue_update_campaigns_interval', 0);
+  $class = actblue_class();
+  include_once ('actblue.inc');
+
+  if ($campI) {
+    $results = db_query("SELECT pid FROM {actblue_pages} WHERE is_active=1 AND last_update<%d ORDER BY last_update ASC",time()-($campI*60));
+    while ($row = db_fetch_object($results)) {
+      actblue_update_page($row->pid);
+    }
+  }
+
+  $entI = variable_get('actblue_update_entities_interval',0);
+
+  if ($entI) {
+    $limit = variable_get('actblue_update_entities_count', 0);
+    $limitStr = $limit?'':' LIMIT '.$limit;
+    $results = db_query("SELECT e.eid,e.pid FROM {actblue_entities} e INNER JOIN {actblue_pages} p ON e.pid=p.pid WHERE p.is_active=1 AND e.last_update<%d %s", time()-($entI*60), $limitStr);
+    while ($row=db_fetch_object($results)) {
+
+      actblue_import_entity($row->eid, $row->pid);
+    }
+  }
+}
+
+/*
+ * 'custom_title' => $node->actblue_custom_title,
+        'custom_blurb' => $node->actblue_custom_blurb,
+*/
+/*
+db_set_active('mapper');
+$result=db_query("SELECT * FROM features WHERE a1='cd' AND a3='111'");
+db_set_active();
+while ($row=db_fetch_object($result)){
+  $lat=($row->latitude_max + $row->latitude_min)/2;
+  $lon = ($row->longitude_max + $row->longitude_min)/2;
+  db_query("INSERT INTO {actblue_coords} (type,state,district,latitude,longitude) VALUES ('cd','%s','%s',%f,%f)", $row->a2, $row->a4,$lat, $lon);
+  dpr($row);
+  echo "$lat $lon <br>";
+}
+die();
+ * 
+*/
