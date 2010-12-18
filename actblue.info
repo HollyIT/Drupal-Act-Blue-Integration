@@ -1,6 +1,0 @@
-; $Id$ 
-name = Actblue
-description = Provides integration with the ActBlue API
-version = 6.x-1.0
-core = 6.x
-php = 5.x
